@@ -1,106 +1,126 @@
-# Core Data Model Editor
+# Data Model Editor
 
-A native macOS application built with SwiftUI that lets you **open, inspect, edit and save** Apple Core Data models (`.xcdatamodeld`) outside of Xcode.  
-It reproduces— and in some areas extends— the familiar Xcode Data Model inspector with a clean **four-panel layout**:
+A native macOS editor for Core Data models, `.xcdatamodeld` and `.xcdatamodel`,
+built so you can edit a model without opening Xcode.
 
-1. **File Explorer** – browse model packages & versions  
-2. **Entities List** – quick overview of entities  
-3. **Entity Detail** – attributes, relationships & fetched properties tables  
-4. **Property Inspector** – contextual editor for the selected item  
+## Why
 
-Multiple models can be open at once using a tabbed interface, and full read/write support means the changes you make are compatible with Xcode and your build pipeline.
+A Core Data model lives in git next to your source. An editor that reformats on
+save turns a one-field change into a four-thousand-line diff, and an editor that
+drops constructs it does not understand destroys data silently.
 
----
+So the central promise here is that **opening a model and saving it without
+touching anything produces the identical file, byte for byte**. Everything else
+is built on top of that.
 
-## ✨ Features
-- Open any `.xcdatamodeld` package (supports versioned models)
-- Edit entities, attributes, relationships, fetched properties & configurations
-- Add / rename / delete model versions and switch the current version
-- Undo & Redo with deep model awareness
-- Multi-tab workspace to work on several models simultaneously
-- XML persistence via [XMLCoder](https://github.com/MaxDesiatov/XMLCoder) – output identical to Xcode
-- Keyboard shortcuts for common actions (`⌘⇧E` new entity, `⌘⇧A` new attribute, `⌘⇧R` new relationship, `⌘⇧V` new version)
-- Native macOS look & feel (dark-mode, sidebar, toolbar, menu commands)
+That means the editor preserves what it does not model: unknown attributes,
+unknown elements, comments and their position among live siblings, the XML
+declaration, and whether the file ends with a newline. Tri-state flags stay
+absent rather than materialising `optional="NO"` on every attribute in the file.
 
----
+## What it does
 
-## 🖥 System Requirements
-|                     | Minimum |
-|---------------------|---------|
-| macOS               | 12.0 (Monterey) |
-| Xcode               | 15 or later |
-| Swift               | 5.7 |
-| Architecture        | Apple Silicon & Intel (Universal) |
+- **Entities** in a flat list or a parent/child outline, with a filter field
+- **Attributes, relationships and fetched properties** as three collapsible
+  tables, with inline editing
+- **Inspectors** for the entity, attribute, relationship, fetched property and
+  configuration, covering the fields Xcode exposes
+- **Configurations**, including the implicit `Default` that Xcode shows for
+  every model and writes for none
+- **Versioned packages**: every version of an `.xcdatamodeld` is loaded, new
+  versions are added from the Editor menu, and which version is current is set
+  explicitly rather than by looking at one
+- **Diagnostics** for problems Core Data will not tell you about, with a repair
+  for the ones that are mechanical
 
----
+### Diagnostics
 
-## 🛠 Building & Running
+Two of these are worth calling out, because Core Data ignores them silently:
 
-### Via Xcode (recommended)
-```bash
-git clone https://github.com/your-org/CoreDataModelEditor.git
-open CoreDataModelEditor/Package.swift
-```
-1. Select the *CoreDataModelEditor* scheme  
-2. Choose *My Mac* as the run destination  
-3. ⌘R to build & launch
+| Written in the file | What Core Data reads | Effect |
+| --- | --- | --- |
+| `defaultValue` | `defaultValueString` | The attribute has no default |
+| `abstract` | `isAbstract` | The entity is not abstract |
 
-### Via Swift Package Manager CLI
-```bash
-swift run
-```
+Both are reported as repairable, and the repair moves the value onto the
+spelling Core Data actually reads. The editor also flags dangling relationship
+destinations, missing inverses, duplicate names and missing parent entities.
 
----
+### Model versions
 
-## 🚀 Usage Guide
+The toolbar's version picker changes **what this window is showing**. It does
+not change which version the package marks current, because that is what every
+consumer of the model compiles against and switching it is a decision, not a
+side effect of looking at an old version. The current one carries a checkmark in
+the picker, and `Editor > Set Current Version` (⌘⇧C) is what moves it.
 
-| Step | Action |
-|------|--------|
-| 1    | **File ▸ Open…** or **⌘O** and choose an `.xcdatamodeld` package |
-| 2    | Use the **File Explorer** (far left) to pick a model version or add a new one |
-| 3    | Select an entity in the **Entities List** to reveal its details |
-| 4    | Switch between **Attributes / Relationships / Fetched Properties** tabs to edit tables |
-| 5    | Click any row, then refine values in the **Property Inspector** |
-| 6    | **⌘S** to save – XML is written back into the package, Xcode sees the changes instantly |
+`Editor > Add Model Version...` asks for a name and a version to copy, exactly
+as Xcode does. The name it offers counts on from the version you are basing it
+on, so a new version of `DualLinkDB 63` is `DualLinkDB 64`. Adding a version
+leaves the current-version marker where it was.
 
-Tip: right-click lists or use toolbar buttons for *Add* / *Delete* actions.
+`Editor > Rename Version...` renames the version the window is showing. If that
+version is the current one, `.xccurrentversion` follows the new name, since a
+marker naming a directory that is no longer there would silently load the wrong
+version. Xcode has no such command; you rename the `.xcdatamodel` in the
+navigator.
 
----
+`Editor > Delete Version...` removes the version the window is showing, after a
+confirmation. It refuses two cases outright, so the item is greyed rather than
+failing: the **last** version, since a package with no `.xcdatamodel` will not
+load at all, and the **current** version, since removing it would have to
+repoint `.xccurrentversion` at something else. Set another version current
+first. Xcode has no such command either; there you delete the `.xcdatamodel`
+from the project navigator, which this app has no equivalent of. The deletion
+reaches disk only on save, and undo brings the version back.
 
-## 🏗 Architecture Overview
+None of the three applies to a bare `.xcdatamodel` with no package around it, so
+all are disabled for one.
 
-```
-SwiftUI App ⟶ Document-based (CoreDataModelDocument)
-           ⟶ MVVM layer (ObservableObject models)
-           ⟶ XML Parsing / Encoding (XMLCoder)
-```
+### Configurations
 
-### Core Layers
-| Layer | Responsibility |
-|-------|----------------|
-| **Models** | Pure Swift structs/classes mirroring Core Data concepts (`CDEntity`, `CDAttribute`, …) |
-| **Persistence** | `CoreDataModelDocument` converts between models and `XMLModel` (the on-disk schema) and handles version packages |
-| **Views** | Modular SwiftUI views for each panel; state propagated via `@ObservedObject` & `@StateObject` |
-| **Commands** | App / toolbar / context menus wired to document mutation helpers with Undo support |
+A configuration is a named subset of the model's entities. You pass its name to
+`addPersistentStore(ofType:configurationName:at:)`, and that store then holds
+only those entities, which is how one model is split across several stores: a
+read-only seed store alongside a writable one, say. `Default` is implicit,
+contains every entity, and is never written to the file. Relationships cannot
+cross stores, which is what fetched properties exist for.
 
-This separation keeps UI reactive while ensuring XML files stay 100 % compatible with Xcode.
+Worth knowing before reaching for one: **MIOCoreData ignores configurations.**
+Its `entities(forConfigurationName:)` returns every entity whatever you pass,
+and `NSPersistentContainer` always passes `nil`. They only do anything under
+Apple's Core Data, behind the `APPLE_CORE_DATA` switch. The editor reads and
+writes them faithfully either way, because Xcode does.
 
----
+## Keyboard shortcuts
 
-## 🤝 Contributing
+| Shortcut | Action |
+| --- | --- |
+| ⌘1 / ⌘2 | Toggle the navigator / the inspector |
+| ⌘⇧N | New model |
+| ⌘N | Add entity |
+| ⌥⌘A / ⌥⌘R | Add attribute / relationship |
+| ⌘⌫ | Delete the selected entity or property |
+| ⌘F | Focus the filter field |
+| ⌘S | Save |
+| ⌘Z / ⌘⇧Z | Undo / redo |
+| ⌘⇧R | Revert to saved |
+| ⌘⇧C | Set the viewed version as the current one |
 
-Contributions are welcome!  
-1. Fork the repo & create a feature branch (`git checkout -b feature/your-feature`)  
-2. Follow the existing **SwiftLint** style (run `swiftlint --fix`)  
-3. Write unit tests in `CoreDataModelEditorTests` for all new logic  
-4. Submit a pull request describing **what** and **why**
+Everything that adds to the model lives in the **Editor** menu, in three groups:
+what the model holds (entity, configuration), what the selected entity holds
+(attribute, relationship, fetched property), and the package of versions around
+both. Add Fetched Property, Add Configuration and the four version commands
+carry no shortcut, apart from Set Current Version. The three property commands are enabled only while an
+entity is selected.
 
-Please open an issue first if you plan a large change— we’d love to discuss design direction.
+## Requirements
 
----
+- macOS 26.0 or later
+- Xcode 26 or later, Swift 6
 
-## 📝 License
+## License
 
-`Core Data Model Editor` is released under the MIT License.  
-See the `LICENSE` file for details.
+MIT. See [LICENSE](LICENSE).
 
+Copyright © 2026 MIO Research Labs. <https://www.miolabs.com>
